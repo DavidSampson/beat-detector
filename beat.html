@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Beat Error</title>
+</head>
+<body>
+  <label for="threshold">Threshold volume</label>
+  <input type="range" min="0" max="1" value="0.3" step="0.001" class="slider" id="threshold">
+  <br>
+  <label for="delta">Amount of silence needed to consider two beats distinct</label>
+  <input type="range" min="0" max="100" value="20" step="1" class="slider" id="delta">
+  <br>
+  <button id="start">Start</button>
+  <button id="clear">Clear</button>
+  <ul id="beats"></ul>
+  <script>
+  (async () => {
+    const RATE = 48000; // Sample rate of audio
+    let DELTA = 20;
+    let beats = [];
+    const beatsList = document.getElementById('beats');
+
+    const audioCtx = new AudioContext()
+    await audioCtx.audioWorklet.addModule(`data:application/javascript;charset=ut8,${encodeURIComponent(`
+      // beat-processor.js
+      class BeatProcessor extends AudioWorkletProcessor {
+        static get parameterDescriptors () {
+          return [{
+            name: 'threshold',
+            defaultValue: 0.5,
+            minValue: 0,
+            maxValue: 1,
+            automationRate: 'k-rate'
+          }, {
+            name: 'sampleRate',
+            defaultValue: 44100,
+            minValue: 0,
+            maxValue: 96000,
+            automationRate: 'k-rate'
+          }, {
+            name: 'offset',
+            defaultValue: 0,
+            minValue: 0,
+            maxValue: 2000000000000,
+            automationRate: 'k-rate'
+          }]
+        }
+        process (inputs, _, {threshold, sampleRate, offset}) {
+          let time = Date.now() - offset;
+          let hits = inputs[0][0].map((s, i) => s > threshold ? i : -1)
+                                .filter(i => i >=0 )
+                                .map(t => 1000*t/sampleRate + time)
+          if(hits.length > 0)
+            this.port.postMessage(hits);
+          return true
+        }
+      }
+
+      registerProcessor('beat-processor', BeatProcessor)
+    `)}`);
+
+    const beatProcessorNode = new AudioWorkletNode(audioCtx, 'beat-processor');
+    beatProcessorNode.port.onmessage = m => m.data.forEach(addBeat);
+    beatProcessorNode.connect(audioCtx.destination);
+    let threshold = beatProcessorNode.parameters.get('threshold');
+    let sampleRate = beatProcessorNode.parameters.get('sampleRate');
+    let offset = beatProcessorNode.parameters.get('offset');
+    threshold.value = 0.3;
+    sampleRate.value = RATE;
+    offset.value = Date.now();
+
+    let stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    audioCtx.createMediaStreamSource(stream).connect(beatProcessorNode);
+
+    document
+      .getElementById("start")
+      .addEventListener("click", ()=> audioCtx.resume());
+    document
+      .getElementById("threshold")
+      .addEventListener("input", e => threshold.value = e.target.value);
+    document
+      .getElementById("clear")
+      .addEventListener("click", () => {
+        beatsEl.innerHTML = "";
+        beats = [];
+      });
+    document
+      .getElementById("delta")
+      .addEventListener("click", e => DELTA = e.target.value)
+    function addBeat(b){
+      if(beats.length == 0 || b - beats[beats.length - 1].slice(-1)[0] > DELTA){
+        beats.push([b]);
+        if(beats.length > 1){
+          let el = document.createElement('li');
+          el.innerText = Math.round(beats[beats.length - 1][0] - beats[beats.length - 2][0]) + " milliseconds";
+          beatsList.insertBefore(el, beatsList.childNodes[0]);
+        }
+      }
+      else
+        beats[beats.length - 1].push(b);
+    }
+  })();
+  </script>
+</body>
+</html>
